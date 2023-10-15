@@ -414,3 +414,33 @@ def get_optimal_samples(
         maximize=maximize,
     )
     return optimal_inputs, optimal_outputs
+
+
+def compute_data_grid(xs, bounds, n_points, grid_size):
+    """Computes a grid for the variable(s) xsl with n_points sampled from bounds.
+
+    Args:
+
+        xsl (int): Index of variable we want to use as grid variable, e.g., 0 for 'x0' 
+        bounds: (Tensor): Bounds of the search space. If the model inputs are
+            normalized, the bounds should be normalized as well.
+        n_points (int): The number of points we want to sample to compute the data grid.
+        grid_size (int): The size of the grid along the xsl variable. 
+    Returns:
+        A `grid_size x n_points x d` Tensor 
+    """
+    d = bounds.shape[1]
+    sample_x = bounds[0] + (bounds[1] - bounds[0]) * torch.rand(n_points, d)
+    grid_variable = torch.linspace(bounds[0,xs], bounds[1, xs], grid_size)
+    grid_tensor = torch.zeros((grid_size, n_points, d), dtype=torch.float64)
+
+    i = 0
+    for g in grid_variable:
+        df = sample_x.detach().clone()
+        df[:,xs] = g
+        grid_tensor[i,:,:] = df
+        i+=1
+
+    grid_tensor = grid_tensor.reshape(-1, grid_tensor.size(-1))
+
+    return(grid_tensor)

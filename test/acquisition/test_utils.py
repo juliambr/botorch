@@ -11,6 +11,7 @@ import torch
 from botorch.acquisition.objective import GenericMCObjective
 from botorch.acquisition.utils import (
     compute_best_feasible_objective,
+    compute_data_grid,
     expand_trace_observations,
     get_acquisition_function,
     get_infeasible_cost,
@@ -398,3 +399,21 @@ class TestGetOptimalSamples(BotorchTestCase):
         # asserting that the solutions found by minimization the samples are smaller
         # than those found by maximization
         self.assertTrue(torch.all(f_opt_min < f_opt))
+
+
+class TestComputeDataGrid(BotorchTestCase):
+    def test_compute_data_grid(self):
+        dims = 8
+        dtype = torch.float64
+        n_points = 100
+        bounds = torch.tensor([[-5, 5]] * dims, dtype=dtype).T
+        grid_size = 20
+        xs = 1
+        
+        gg = compute_data_grid(xs, bounds, n_points, grid_size)
+
+        self.assertEqual(list(gg.shape), [grid_size * n_points, dims])
+        self.assertLess(gg[:,0].max().item(), 5)
+        self.assertTrue(gg[:20,xs].unique().item(), 5)
+
+
