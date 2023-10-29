@@ -9,8 +9,11 @@ Utilities for acquisition functions.
 """
 
 from __future__ import annotations
+from argparse import Namespace
+import datetime
 
 import math
+import time
 from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -444,3 +447,41 @@ def compute_data_grid(xs, bounds, n_points, grid_size):
     grid_tensor = grid_tensor.reshape(-1, grid_tensor.size(-1))
 
     return(grid_tensor)
+
+class Timer(object):
+    """
+    Timer class. Thanks to Eli Bendersky, Josiah Yoder, Jonas Adler, Can Kavaklıoğlu,
+    and others from https://stackoverflow.com/a/50957722.
+    """
+    def __init__(self, name=None, filename=None):
+        self.name = name
+        self.filename = filename
+
+    def __enter__(self):
+        self.tstart = time.time()
+
+    def __exit__(self, type, value, traceback):
+        message = 'Elapsed: %.2f seconds' % (time.time() - self.tstart)
+        if self.name:
+            message = '*[TIME] [%s] ' % self.name + message
+        print(message)
+        if self.filename:
+            with open(self.filename,'a') as file:
+                print(str(datetime.datetime.now())+": ",message,file=file)
+
+def combine_data_namespaces(ns1, ns2):
+    """Combine two data Namespaces, with fields x (tensor) and y (tensor)."""
+    ns = Namespace()
+
+    if ns2.x is None: 
+        ns.x = ns1.x
+        ns.y = ns1.y
+    else: 
+        if len(ns2.x.shape) == 1:
+            ns2.x = ns2.x.unsqueeze(1).T
+        if len(ns2.y.shape) == 2:
+            ns2.y = ns2.y.flatten()
+
+        ns.x = torch.cat((ns1.x, ns2.x), 0) 
+        ns.y = torch.cat((ns1.y, ns2.y), 0) 
+    return ns

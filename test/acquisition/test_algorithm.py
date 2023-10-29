@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import torch
-from botorch.acquisition.algorithm import Algorithm, AlgorithmSet, FixedPathAlgorithm
+from botorch.acquisition.algorithm import Algorithm, AlgorithmSet, FixedPathAlgorithm, PDPAlgorithm
 from botorch.acquisition.utils import compute_data_grid
 from botorch.test_functions.synthetic import StyblinskiTang
 from botorch.utils.testing import BotorchTestCase
@@ -17,7 +17,6 @@ class TestAlgorithm(BotorchTestCase):
     def test_abstract_raises(self):
         with self.assertRaises(TypeError):
             Algorithm(self.test_params)
-
 
 class TestFixedPathAlgorithm(BotorchTestCase):
     def setUp(self):
@@ -38,6 +37,26 @@ class TestFixedPathAlgorithm(BotorchTestCase):
         alg.initialize()
         # For the FixedPathAlgorithm this just returns the y values on the execution path 
         alg.run_algorithm_on_f(f)
+
+class TestPDPAlgorithm(BotorchTestCase):
+    def setUp(self):
+        super().setUp()
+        dims = 3
+        dtype = torch.float64
+        n_points = 10
+        bounds = torch.tensor([[-5, 5]] * dims, dtype=dtype).T
+        grid_size = 3
+        xs=1
+        self.params = {"name": "MyPDP", "xs": xs, "n_points": n_points, "bounds": bounds, "grid_size": grid_size}
+        self.dims = dims
+
+    def test_run_algorithm_on_f(self):
+        f = StyblinskiTang(dim=self.dims)
+        alg = PDPAlgorithm(self.params)
+        alg.initialize()
+        # For the FixedPathAlgorithm this just returns the y values on the execution path 
+        alg.run_algorithm_on_f(f)
+
 
 class TestAlgorithmSet(TestFixedPathAlgorithm):
     def setUp(self):

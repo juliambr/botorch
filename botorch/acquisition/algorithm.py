@@ -15,6 +15,9 @@ import warnings
 from abc import ABC, abstractmethod
 
 import numpy as np
+import torch
+
+from botorch.acquisition.utils import compute_data_grid
 
 
 class Algorithm(ABC):
@@ -122,6 +125,50 @@ class FixedPathAlgorithm(Algorithm):
         # Default behavior: return execution path
         return self.exe_path
 
+class PDPAlgorithm(FixedPathAlgorithm):
+    """
+    Algorithm that computes the PDP.
+    """
+    def set_params(self, params):
+        """Set self.params, the parameters for the algorithm."""
+        super().set_params(params)
+        params = Namespace(**params)
+
+        self.params.name = getattr(params, "name", "PDPAlgorithm")
+        self.params.grid_size = getattr(params, "grid_size", 10)
+        self.params.n_points = getattr(params, "n_points")
+        self.params.xs = getattr(params, "xs")
+        self.params.bounds = getattr(params, "bounds")
+
+        self.params.x_path = compute_data_grid(self.params.xs, self.params.bounds, self.params.n_points, self.params.grid_size)
+
+    def get_next_x(self):
+        """
+        Given the current execution path, return the next x in the execution path. If
+        the algorithm is complete, return None.
+        """
+        len_path = len(self.exe_path.x)
+        x_path = self.params.x_path
+        next_x = x_path[len_path] if len_path < len(x_path) else None
+        return next_x
+
+    def get_output(self):
+        """Return output based on self.exe_path."""
+        # Evaluated values at the grid 
+        y = torch.stack(self.exe_path.y)
+        # Group along grid points 
+        keys, indices = torch.unique(self.params.x_path[:,self.params.xs], return_inverse=True)
+        # Compute mean as main output and variance in case we want to display uncertainty bands 
+        means = torch.zeros_like(keys, dtype=torch.float32)
+        var = torch.zeros_like(keys, dtype=torch.float32)
+        for i, key in enumerate(keys):
+            means[i] = y[indices == i].mean()
+            var[i] = y[indices == i].var()
+        output = Namespace(x=keys, y=means, var=var)
+        return output
+    
+
+
 
 class AlgorithmSet:
     """Wrapper that duplicates and manages a set of Algorithms."""
@@ -188,3 +235,4 @@ class AlgorithmSet:
         del exe_path.x[final_idx:]
         del exe_path.y[final_idx:]
         return exe_path
+
