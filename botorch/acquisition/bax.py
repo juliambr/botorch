@@ -148,6 +148,7 @@ class InfoBAX(AcquisitionFunction, ABC):
             model = deepcopy(self.model)
 
             if x is not None:
+                # TODO: Set train data does not really change the posterior. Check. 
                 model.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False)
                 post = self.model.posterior(x)
                 y = post.rsample()[0]
@@ -205,34 +206,23 @@ class InfoBAX(AcquisitionFunction, ABC):
 
         for exe_path in self.exe_path_list:
 
+            exe_path_new = Namespace()
+
             # 1. Merge (D, eA)
-            # exe_path.x = torch.stack(exe_path.x)
-            # exe_path.y = torch.stack(exe_path.y)
+            exe_path_new.x = torch.stack(exe_path.x).to(dtype=torch.float)
+            exe_path_new.y = torch.stack(exe_path.y).to(dtype=torch.float).flatten().detach()
 
             comb_data = Namespace()
-            comb_data.x = torch.cat((data.x, torch.stack(exe_path.x, dim=0)), 0)
-            comb_data.y = torch.cat((data.y, torch.stack(exe_path.y, dim=0).flatten()),0).unsqueeze(-1)
-            comb_data.y = comb_data.y.to(dtype=torch.float64)
+            comb_data.x = torch.cat((data.x, exe_path_new.x), 0)
+            comb_data.y = torch.cat((data.y, exe_path_new.y), 0)
+            comb_data.y = comb_data.y.view(-1, 1)
 
-            model_new = SingleTaskGP(train_X=comb_data.x, train_Y=comb_data.y)
+            # TODO: CHECK IF WE WANT TO RETRAIN HERE
+            model_new = SingleTaskGP(train_X=comb_data.x, train_Y=comb_data.y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
+            mll = ExactMarginalLogLikelihood(model_new.likelihood, model_new)
+            fit_gpytorch_mll(mll);
+        
             posterior_samp = model_new.posterior(X)     
-
-            # model_new = deepcopy(self.model)
-            # model_new.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False)
-            # model_new = model_new.train()
-
-
-            # model_new = SingleTaskGP(train_X=comb_data.x, train_Y=comb_data.y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
-            # model_new.train()
-            # model_new.zero_grad()
-            # mll = ExactMarginalLogLikelihood(model_new.likelihood, model_new)
-            # fit_gpytorch_mll(mll);
-
-            # model_new = deepcopy(self.model)
-
-            # model_new.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False) # TODO: Check re-fit? 
-            # model_new.zero_grad()
-            # model_new.train()
 
             # # 2. Computer posterior y_x | (D, eA)
             # posterior_samp = model_new.posterior(X)
@@ -247,6 +237,8 @@ class InfoBAX(AcquisitionFunction, ABC):
 
         # Part 3: Combine the part 1 and part 2
         acq_exe = h_post - avg_h_samp
+
+        return(acq_exe)
 
     def _compute_information_gain(
         self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor
