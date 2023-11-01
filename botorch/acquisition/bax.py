@@ -79,7 +79,7 @@ class InfoBAX(AcquisitionFunction, ABC):
         self.params = Namespace()
         self.params.name = getattr(params, 'name', 'InfoBAXAcqFunction')
         self.params.n_path = getattr(params, "n_path", 10)
-        self.params.num_mv_samples = getattr(params, "num_mv_samples")
+        # self.params.num_mv_samples = getattr(params, "num_mv_samples")
         # self.params.crop = getattr(params, "crop", True)
         # self.posterior_transform = posterior_transform TODO 
         # self.set_X_pending(X_pending) TODO 
@@ -143,14 +143,16 @@ class InfoBAX(AcquisitionFunction, ABC):
 
             data = Namespace(x=self.model.train_inputs[0], y=self.model.train_targets)
             # Next round we need to combine it with query_ns (what has already been queried for that algorithm)
-            comb_data = combine_data_namespaces(data, query_ns)
+            # comb_data = combine_data_namespaces(data, query_ns)
 
             model = deepcopy(self.model)
+            if query_ns.x is not None: 
+                model = model.fantasize(query_ns.x.view(1, -1), query_ns.y)
 
             if x is not None:
                 # TODO: Set train data does not really change the posterior. Check. 
-                model.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False)
-                post = self.model.posterior(x)
+                # model.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False)
+                post = model.posterior(x)
                 y = post.rsample()[0]
 
                 # Update query history
@@ -191,6 +193,7 @@ class InfoBAX(AcquisitionFunction, ABC):
         )
         mu = posterior.mean
         std = posterior.variance.detach().numpy().flatten()
+        # TODO: Probably take the root
 
         # 2. Formula for entropy (standard normal)
         h_post = np.log(std) + np.log(np.sqrt(2 * np.pi)) + 0.5

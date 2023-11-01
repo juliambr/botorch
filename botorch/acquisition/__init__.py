@@ -71,6 +71,12 @@ from botorch.acquisition.preference import (
     AnalyticExpectedUtilityOfBestOption,
     PairwiseBayesianActiveLearningByDisagreement,
 )
+
+from botorch.acquisition.algorithm import (
+    PDPAlgorithm, 
+    FixedPathAlgorithm,
+)
+
 from botorch.acquisition.prior_guided import PriorGuidedAcquisitionFunction
 from botorch.acquisition.proximal import ProximalAcquisitionFunction
 
@@ -84,12 +90,14 @@ __all__ = [
     "LogExpectedImprovement",
     "LogNoisyExpectedImprovement",
     "FixedFeatureAcquisitionFunction",
+    "FixedPathAlgorithm",
     "GenericCostAwareUtility",
     "InverseCostWeightedUtility",
     "NoisyExpectedImprovement",
     "OneShotAcquisitionFunction",
     "PairwiseBayesianActiveLearningByDisagreement",
     "PairwiseMCPosteriorVariance",
+    "PDPAlgorithm",
     "PosteriorMean",
     "PriorGuidedAcquisitionFunction",
     "ProbabilityOfImprovement",
