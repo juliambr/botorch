@@ -59,7 +59,7 @@ class TestBAX(BotorchTestCase):
         self.algorithm = alg
 
     def test_info_bax(self):
-        params = {"name": "BAX", "n_path": 2, "num_mv_samples": 20}
+        params = {"name": "BAX", "n_path": 2, "exe_path_dependencies": False}
         EIG = InfoBAX(params=params, model=self.model, algorithm=self.algorithm)
         EIG.forward(self.candidate_set)
         print("bla")

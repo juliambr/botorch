@@ -216,6 +216,26 @@ class AlgorithmSet:
         output_list = [algo.get_output() for algo in algo_list]
         return exe_path_list, output_list
 
+    def run_algorithm_on_f_list_independent(self, f, n_f):
+        """
+        Run the algorithm by querying the whole execution path first, and then 
+        running f_list on it.
+         
+        Return the lists of execution paths and outputs.
+        """
+
+        # Create n_f copies 
+        algo_list = [self.algo.get_copy() for _ in range(n_f)]
+
+        # Initialize each algo in list
+        for algo in zip(algo_list):
+            algo.initialize()
+            x_path = algo.params.x_path
+            exe_path_new = Namespace()
+            exe_path_new.x = list(x_path.unbind(dim=0))
+            exe_path_new.y = f(exe_path_new.x)
+
+
     def get_exe_path_list_crop(self):
         """Return get_exe_path_crop for each algo in self.algo_list."""
         exe_path_list_crop = []

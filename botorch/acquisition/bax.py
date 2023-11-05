@@ -33,9 +33,8 @@ import torch
 from torch import Tensor
 from botorch.acquisition.acquisition import AcquisitionFunction
 from botorch.acquisition.algorithm import AlgorithmSet
-from botorch.acquisition.utils import Timer, combine_data_namespaces
-from botorch.models.gp_regression import SingleTaskGP
-from botorch.models.model import Model
+from botorch.sampling import SobolQMCNormalSampler
+from botorch.utils import Timer
 
 from botorch import fit_gpytorch_mll
 from gpytorch import ExactMarginalLogLikelihood
@@ -79,25 +78,19 @@ class InfoBAX(AcquisitionFunction, ABC):
         self.params = Namespace()
         self.params.name = getattr(params, 'name', 'InfoBAXAcqFunction')
         self.params.n_path = getattr(params, "n_path", 10)
-        # self.params.num_mv_samples = getattr(params, "num_mv_samples")
-        # self.params.crop = getattr(params, "crop", True)
-        # self.posterior_transform = posterior_transform TODO 
-        # self.set_X_pending(X_pending) TODO 
+        self.params.exe_path_dependencies = getattr(params, "exe_path_dependencies", True)
 
         self.set_model(model)
         self.set_algorithm(algorithm)
 
-        exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
+        if self.params.exe_path_dependencies:
+            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
+        else: 
+            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples_independent()
 
         # Set self.output_list
         self.output_list = output_list
-        self.exe_path_full_list = full_list
-
-        # Set self.exe_path_list to list of full or cropped exe paths
-        # if self.params.crop:
-        #     self.exe_path_list = exe_path_list
-        # else:
-        #     
+        self.exe_path_full_list = full_list 
         self.exe_path_list = full_list
 
     def set_model(self, model):
@@ -134,6 +127,31 @@ class InfoBAX(AcquisitionFunction, ABC):
 
         return exe_path_list, output_list, exe_path_full_list
 
+    def get_exe_path_and_output_samples_independent(self):
+
+        with Timer(f"Sample {self.params.n_path} execution paths"):
+            x_path = self.algorithm.params.x_path.float()
+            x_path_l = list(x_path.unbind(dim=0))
+            posterior = self.model.posterior(x_path)
+
+            sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
+            post_samples = sampler(posterior).unbind(dim=0)        
+
+            # Create n_f copies 
+            algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
+
+            # Initialize each algo in list
+            for algo, post in zip(algo_list, post_samples):
+                algo.exe_path.x = x_path_l
+                algo.exe_path.y = post.unbind(dim=0)
+
+            exe_path_full_list = [algo.exe_path for algo in algo_list]
+            output_list = [algo.get_output() for algo in algo_list]
+            exe_path_list = exe_path_full_list
+
+        return exe_path_list, output_list, exe_path_full_list
+
+
     def call_function_sample_list(self, x_list):
         y_list = None
 
@@ -146,22 +164,25 @@ class InfoBAX(AcquisitionFunction, ABC):
             # comb_data = combine_data_namespaces(data, query_ns)
 
             model = deepcopy(self.model)
-            if query_ns.x is not None: 
-                model = model.fantasize(query_ns.x.view(1, -1), query_ns.y)
 
             if x is not None:
-                # TODO: Set train data does not really change the posterior. Check. 
-                # model.set_train_data(inputs=comb_data.x, targets=comb_data.y, strict=False)
+
+                if query_ns.x is not None: 
+                    post = model.posterior(x)
+                    X_new = query_ns.x.view(-1, self.model.train_inputs[0].shape[1])
+                    Y_new = query_ns.y
+                    model = model.condition_on_observations(X=X_new, Y=Y_new)
+
                 post = model.posterior(x)
                 y = post.rsample()[0]
 
                 # Update query history
                 if query_ns.x is None: 
-                    query_ns.x = x
+                    query_ns.x = x.unsqueeze(1).T
                     query_ns.y = y
                 else: 
                     query_ns.x = torch.cat((query_ns.x, x.unsqueeze(1).T), 0)
-                    query_ns.y = torch.cat((query_ns.y, y.flatten()), 0)
+                    query_ns.y = torch.cat((query_ns.y, y), 0)
             else:
                 y = None
 
@@ -192,11 +213,11 @@ class InfoBAX(AcquisitionFunction, ABC):
             posterior_transform=None
         )
         mu = posterior.mean
-        std = posterior.variance.detach().numpy().flatten()
+        postvar = posterior.variance.detach().numpy().flatten()
         # TODO: Probably take the root
 
         # 2. Formula for entropy (standard normal)
-        h_post = np.log(std) + np.log(np.sqrt(2 * np.pi)) + 0.5
+        h_post = 0.5 * np.log(2 * np.pi * postvar) + 0.5
 
         # Part 2: E[H(y_x | (D, eA))] given our different execution path samples eA
 
@@ -215,24 +236,19 @@ class InfoBAX(AcquisitionFunction, ABC):
             exe_path_new.x = torch.stack(exe_path.x).to(dtype=torch.float)
             exe_path_new.y = torch.stack(exe_path.y).to(dtype=torch.float).flatten().detach()
 
-            comb_data = Namespace()
-            comb_data.x = torch.cat((data.x, exe_path_new.x), 0)
-            comb_data.y = torch.cat((data.y, exe_path_new.y), 0)
-            comb_data.y = comb_data.y.view(-1, 1)
-
-            # TODO: CHECK IF WE WANT TO RETRAIN HERE
-            model_new = SingleTaskGP(train_X=comb_data.x, train_Y=comb_data.y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
-            mll = ExactMarginalLogLikelihood(model_new.likelihood, model_new)
-            fit_gpytorch_mll(mll);
+            model_cond = copy.deepcopy(self.model)
+            post = model_cond.posterior(X)
+            X_new = exe_path_new.x
+            Y_new = exe_path_new.y.view(-1, 1)
+            model_cond = model_cond.condition_on_observations(X=X_new, Y=Y_new)
         
-            posterior_samp = model_new.posterior(X)     
+            posterior_samp = model_cond.posterior(X)     
 
             # # 2. Computer posterior y_x | (D, eA)
-            # posterior_samp = model_new.posterior(X)
-            std_samp = posterior_samp.variance.detach().numpy().flatten()
+            postvar_samp = posterior_samp.variance.detach().numpy().flatten()
 
             # 3. Formula for entropy 
-            h_samp = np.log(std_samp) + np.log(np.sqrt(2 * np.pi)) + 0.5
+            h_samp = 0.5 * np.log(2 * np.pi * postvar_samp) + 0.5
             h_samp_list.append(h_samp)
 
         # 4. Compute mean E[(...)]
@@ -243,71 +259,3 @@ class InfoBAX(AcquisitionFunction, ABC):
 
         return(acq_exe)
 
-    def _compute_information_gain(
-        self, X: Tensor, mean_M: Tensor, variance_M: Tensor, covar_mM: Tensor
-    ) -> Tensor:
-        r"""Computes the information gain at the design points `X`.
-
-        Approximately computes the information gain at the design points `X`,
-        for both MES with noisy observations and multi-fidelity MES with noisy
-        observation and trace observations.
-
-        The implementation is inspired from the papers on multi-fidelity MES by
-        [Takeno2020mfmves]_. The notation in the comments in this function follows
-        the Appendix C of [Takeno2020mfmves]_.
-
-        `num_fantasies = 1` for non-fantasized models.
-
-        Args:
-            X: A `batch_shape x 1 x d`-dim Tensor of `batch_shape` t-batches
-                with `1` `d`-dim design point each.
-            mean_M: A `batch_shape x num_fantasies x (m)`-dim Tensor of means.
-            variance_M: A `batch_shape x num_fantasies x (m)`-dim Tensor of variances.
-            covar_mM: A
-                `batch_shape x num_fantasies x (m) x (1 + num_trace_observations)`-dim
-                Tensor of covariances.
-
-        Returns:
-            A `num_fantasies x batch_shape`-dim Tensor of information gains at the
-            given design points `X` (`num_fantasies=1` for non-fantasized models).
-        """
-        with Timer(f"Compute acquisition function for a batch of {len(X)} points"):
-            # Compute posterior, and post given each execution path sample, for x_list
-            # mu and uncertainty of y_x
-            mu, std = self.model.get_post_mu_cov(X, full_cov=False)
-
-            # Compute mean and std arrays for posterior given execution path samples
-            mu_list = []
-            std_list = []
-            for exe_path in self.exe_path_list:
-                comb_data = Namespace()
-                comb_data.x = self.model.data.x + exe_path.x
-                comb_data.y = self.model.data.y + exe_path.y
-                # Prediction at y_x and uncertainty of y_x if execution path and data was given
-                samp_mu, samp_std = self.model.gp_post_wrapper(
-                    X, comb_data, full_cov=False
-                )
-                mu_list.append(samp_mu)
-                std_list.append(samp_std)
-
-            # Compute acq_list, the acqfunction value for each x in x_list
-            if self.params.acq_str == "exe":
-                acq_list = self.acq_exe_normal(std, std_list)
-            elif self.params.acq_str == 'out':
-                acq_list = self.acq_out_normal(std, mu_list, std_list, self.output_list)
-            elif self.params.acq_str == 'is':
-                acq_list = self.acq_is_normal(
-                    std, mu_list, std_list, self.output_list, X
-                )
-
-        # Package and store acq_vars
-        self.acq_vars = {
-            "mu": mu,
-            "std": std,
-            "mu_list": mu_list,
-            "std_list": std_list,
-            "acq_list": acq_list,
-        }
-
-        # Return list of acquisition function on x in x_list
-        return acq_list
