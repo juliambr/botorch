@@ -1033,3 +1033,27 @@ class SpeedReducer(SyntheticTestFunction, ConstrainedBaseTestProblem):
             ],
             dim=-1,
         )
+
+
+class ApproxmiateObjective(SyntheticTestFunction):
+    r"""Test function using the model posterior as an approximation of a true function.
+    """
+
+    def __init__(
+        self, 
+        dim: int,
+        noise_std = None, 
+        negate: bool = False, 
+        bounds: List[Tuple[float, float]] = None, 
+        model = None
+    ) -> None: 
+        self._bounds = bounds
+        self.dim = dim
+        super().__init__(noise_std=noise_std, negate=negate, bounds=bounds) 
+        self.model = model
+    
+    def evaluate_true(self, X: Tensor) -> Tensor:
+        post = self.model.posterior(X)
+        mu = post.mean
+
+        return(mu)

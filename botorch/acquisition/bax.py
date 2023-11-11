@@ -34,7 +34,7 @@ from torch import Tensor
 from botorch.acquisition.acquisition import AcquisitionFunction
 from botorch.acquisition.algorithm import AlgorithmSet
 from botorch.sampling import SobolQMCNormalSampler
-from botorch.utils import Timer
+import time 
 
 from botorch import fit_gpytorch_mll
 from gpytorch import ExactMarginalLogLikelihood
@@ -83,10 +83,18 @@ class InfoBAX(AcquisitionFunction, ABC):
         self.set_model(model)
         self.set_algorithm(algorithm)
 
+        print('Sampling of execution paths')
+
+        tstart = time.time()
+
         if self.params.exe_path_dependencies:
             exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
         else: 
             exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples_independent()
+
+        message = 'Elapsed: %.2f seconds' % (time.time() - tstart)
+        
+        print(message)
 
         # Set self.output_list
         self.output_list = output_list
@@ -111,43 +119,41 @@ class InfoBAX(AcquisitionFunction, ABC):
     def get_exe_path_and_output_samples(self):
         exe_path_list = []
         output_list = []
-        with Timer(f"Sample {self.params.n_path} execution paths"):
-            # Initialize model fsl
-            self.fsl_queries = [Namespace(x=None, y=None) for _ in range(self.params.n_path)]
+        # Initialize model fsl
+        self.fsl_queries = [Namespace(x=None, y=None) for _ in range(self.params.n_path)]
 
-            # Run algorithm on function sample list
-            f_list = self.call_function_sample_list
-            algoset = AlgorithmSet(self.algorithm)
-            exe_path_full_list, output_list = algoset.run_algorithm_on_f_list(
-                f_list, self.params.n_path
-            )
+        # Run algorithm on function sample list
+        f_list = self.call_function_sample_list
+        algoset = AlgorithmSet(self.algorithm)
+        exe_path_full_list, output_list = algoset.run_algorithm_on_f_list(
+            f_list, self.params.n_path
+        )
 
-            # Get crop of each exe_path in exe_path_list
-            exe_path_list = algoset.get_exe_path_list_crop()
+        # Get crop of each exe_path in exe_path_list
+        exe_path_list = algoset.get_exe_path_list_crop()
 
         return exe_path_list, output_list, exe_path_full_list
 
     def get_exe_path_and_output_samples_independent(self):
 
-        with Timer(f"Sample {self.params.n_path} execution paths"):
-            x_path = self.algorithm.params.x_path.float()
-            x_path_l = list(x_path.unbind(dim=0))
-            posterior = self.model.posterior(x_path)
+        x_path = self.algorithm.params.x_path.float()
+        x_path_l = list(x_path.unbind(dim=0))
+        posterior = self.model.posterior(x_path)
 
-            sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
-            post_samples = sampler(posterior).unbind(dim=0)        
+        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
+        post_samples = sampler(posterior).unbind(dim=0)        
 
-            # Create n_f copies 
-            algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
+        # Create n_f copies 
+        algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
 
-            # Initialize each algo in list
-            for algo, post in zip(algo_list, post_samples):
-                algo.exe_path.x = x_path_l
-                algo.exe_path.y = post.unbind(dim=0)
+        # Initialize each algo in list
+        for algo, post in zip(algo_list, post_samples):
+            algo.exe_path.x = x_path_l
+            algo.exe_path.y = post.unbind(dim=0)
 
-            exe_path_full_list = [algo.exe_path for algo in algo_list]
-            output_list = [algo.get_output() for algo in algo_list]
-            exe_path_list = exe_path_full_list
+        exe_path_full_list = [algo.exe_path for algo in algo_list]
+        output_list = [algo.get_output() for algo in algo_list]
+        exe_path_list = exe_path_full_list
 
         return exe_path_list, output_list, exe_path_full_list
 
@@ -228,18 +234,22 @@ class InfoBAX(AcquisitionFunction, ABC):
 
         h_samp_list = []
 
+        tstart = time.time()
+
+        print('Computing of posterior')
+
         for exe_path in self.exe_path_list:
 
             exe_path_new = Namespace()
 
             # 1. Merge (D, eA)
-            exe_path_new.x = torch.stack(exe_path.x).to(dtype=torch.float)
-            exe_path_new.y = torch.stack(exe_path.y).to(dtype=torch.float).flatten().detach()
+            exe_path_new.x = torch.stack(exe_path.x)
+            exe_path_new.y = torch.stack(exe_path.y).flatten().detach()
 
             model_cond = copy.deepcopy(self.model)
             post = model_cond.posterior(X)
-            X_new = exe_path_new.x
-            Y_new = exe_path_new.y.view(-1, 1)
+            X_new = exe_path_new.x.to(dtype=torch.float64)
+            Y_new = exe_path_new.y.view(-1, 1).to(dtype=torch.float64)
             model_cond = model_cond.condition_on_observations(X=X_new, Y=Y_new)
         
             posterior_samp = model_cond.posterior(X)     
@@ -250,6 +260,10 @@ class InfoBAX(AcquisitionFunction, ABC):
             # 3. Formula for entropy 
             h_samp = 0.5 * np.log(2 * np.pi * postvar_samp) + 0.5
             h_samp_list.append(h_samp)
+
+        message = 'Elapsed: %.2f seconds' % (time.time() - tstart)
+        
+        print(message)
 
         # 4. Compute mean E[(...)]
         avg_h_samp = np.mean(h_samp_list, 0)
