@@ -23,7 +23,9 @@ from argparse import Namespace
 from copy import deepcopy
 import copy
 from math import log
+import math
 from typing import Any, Callable, Optional
+from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
@@ -41,7 +43,7 @@ from gpytorch import ExactMarginalLogLikelihood
 
 CLAMP_LB = 1.0e-8
 
-class InfoBAX(AcquisitionFunction, ABC): 
+class InfoBAX(AnalyticAcquisitionFunction, ABC): 
     r"""Abstract base class for acquisition functions based on Max-value Entropy Search.
 
     This class provides the basic building blocks for constructing max-value
@@ -80,7 +82,7 @@ class InfoBAX(AcquisitionFunction, ABC):
         self.params.n_path = getattr(params, "n_path", 10)
         self.params.exe_path_dependencies = getattr(params, "exe_path_dependencies", True)
 
-        self.set_model(model)
+        # self.set_model(model)
         self.set_algorithm(algorithm)
 
         print('Sampling of execution paths')
@@ -200,7 +202,7 @@ class InfoBAX(AcquisitionFunction, ABC):
         return(y_list)
     
 
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
+    def forward(self, X: torch.Tensor, min_var: float = 1e-12) -> torch.Tensor:
         r"""Compute EIG at the design points `X`.
 
         Args:
@@ -212,18 +214,20 @@ class InfoBAX(AcquisitionFunction, ABC):
         """
         # Part 1: H(fx | AT)
 
-        # 1. Posterior y_x | D for different x 
-        posterior = self.model.posterior(
-            X.unsqueeze(-3),
-            observation_noise=False,
-            posterior_transform=None
-        )
-        mu = posterior.mean
-        postvar = posterior.variance.detach().numpy().flatten()
-        # TODO: Probably take the root
+        mu, sigma = self._mean_and_sigma(X)
+
+        # # 1. Posterior y_x | D for different x 
+        # posterior = self.model.posterior(
+        #     X.unsqueeze(-3),
+        #     observation_noise=False,
+        #     posterior_transform=None
+        # )
+        # mu = posterior.mean
+        # postvar = posterior.variance.detach().numpy().flatten()
+        # # TODO: Probably take the root
 
         # 2. Formula for entropy (standard normal)
-        h_post = 0.5 * np.log(2 * np.pi * postvar) + 0.5
+        h_post = 0.5 * torch.log(2 * torch.pi * sigma) + 0.5
 
         # Part 2: E[H(y_x | (D, eA))] given our different execution path samples eA
 
@@ -253,9 +257,10 @@ class InfoBAX(AcquisitionFunction, ABC):
             model_cond = model_cond.condition_on_observations(X=X_new, Y=Y_new)
         
             posterior_samp = model_cond.posterior(X)     
+            mean = posterior_samp.mean.squeeze(-2).squeeze(-1)
 
             # # 2. Computer posterior y_x | (D, eA)
-            postvar_samp = posterior_samp.variance.detach().numpy().flatten()
+            postvar_samp = posterior_samp.variance.clamp_min(min_var).sqrt().view(mean.shape)
 
             # 3. Formula for entropy 
             h_samp = 0.5 * np.log(2 * np.pi * postvar_samp) + 0.5
@@ -269,7 +274,7 @@ class InfoBAX(AcquisitionFunction, ABC):
         avg_h_samp = np.mean(h_samp_list, 0)
 
         # Part 3: Combine the part 1 and part 2
-        acq_exe = h_post - avg_h_samp
+        acq_exe = torch.from_numpy(h_post - avg_h_samp)
 
         return(acq_exe)
 
