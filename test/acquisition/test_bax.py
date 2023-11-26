@@ -10,7 +10,7 @@ from gpytorch import ExactMarginalLogLikelihood
 
 import torch
 from botorch.acquisition.algorithm import PDPAlgorithm
-from botorch.acquisition.analytic import ExpectedImprovement
+from botorch.acquisition.analytic import ExpectedImprovement, PosteriorVariance
 from botorch.acquisition.bax import InfoBAX
 from botorch.acquisition.multi_objective.predictive_entropy_search import qMultiObjectivePredictiveEntropySearch
 
@@ -41,16 +41,17 @@ class TestBAX(BotorchTestCase):
         self.data.y = self.f(self.data.x).unsqueeze(0).T
 
         self.model = SingleTaskGP(train_X=self.data.x, train_Y=self.data.y, input_transform=Normalize(d=self.dims), outcome_transform=Standardize(m=1))
-        # self.model_st = model_st.to(device=self.device, dtype=dtype)
+
         mll = ExactMarginalLogLikelihood(self.model.likelihood, self.model)
         fit_gpytorch_mll(mll);
 
-        print("Lengthscale:", self.model.covar_module.base_kernel.lengthscale)
-        print("Outputscale:", self.model.covar_module.outputscale)
-        print("Noise:", self.model.likelihood.noise)
+        # print("Lengthscale:", self.model.covar_module.base_kernel.lengthscale)
+        # print("Outputscale:", self.model.covar_module.outputscale)
+        # print("Noise:", self.model.likelihood.noise)
 
         candidate_set = torch.rand(20, self.dims, device="cpu", dtype=self.dtype)
         self.candidate_set = self.bounds[0,:] + (self.bounds[1,:] - self.bounds[0,:]) * candidate_set
+        self.candidate_set = self.candidate_set.unsqueeze(1)  
 
         n_points = 10
         bounds = torch.tensor([[-5, 5]] * dims, dtype=self.dtype).T
@@ -61,9 +62,12 @@ class TestBAX(BotorchTestCase):
         alg.initialize()
         self.algorithm = alg
 
+
     def test_info_bax(self):
-        params = {"name": "BAX", "n_path": 2, "exe_path_dependencies": False}
-        EIG = InfoBAX(params=params, model=self.model, algorithm=self.algorithm)
+        PV = PosteriorVariance(model=self.model, maximize=False)
+        PV.forward(self.candidate_set)
+
+        EIG = InfoBAX(model=self.model, algorithm=self.algorithm, fixed_x_execution_path=True, n_path=2)
         EIG.forward(self.candidate_set)
 
     def test_info_bax_alternative(self):

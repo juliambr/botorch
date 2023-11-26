@@ -18,105 +18,102 @@ References
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from argparse import Namespace
 from copy import deepcopy
 import copy
-from math import log
-import math
-from typing import Any, Callable, Optional
+from math import log, pi
+from typing import Any
+import warnings
+import logging
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
-
-from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
 
 import numpy as np
 import torch
-from torch import Tensor
-from botorch.acquisition.acquisition import AcquisitionFunction
 from botorch.acquisition.algorithm import AlgorithmSet
-from botorch.sampling import SobolQMCNormalSampler
+from botorch.sampling import SobolQMCNormalSampler, DeterministicSampler
 import time 
-
-from botorch import fit_gpytorch_mll
-from gpytorch import ExactMarginalLogLikelihood
 
 CLAMP_LB = 1.0e-8
 
 class InfoBAX(AnalyticAcquisitionFunction, ABC): 
-    r"""Abstract base class for acquisition functions based on Max-value Entropy Search.
-
-    This class provides the basic building blocks for constructing max-value
-    entropy-based acquisition functions along the lines of [Wang2017mves]_.
-
-    Subclasses need to implement `_sample_max_values` and _compute_information_gain`
-    methods.
-
-    :meta private:
+    r"""Base class for Information-based Bayesian Algorithm Execution. 
+     
+    This class provides an implementation of infill-criterion introduced in [Neiswanger2021Bax]_.
+    Note that this is an implementation of 3.1 (EIG for Execution Path) in [Neiswanger2021Bax]_ only. 
+    Please verify the assumptions of whether this is suitable depending on the algorithm chosen. 
     """
 
     def __init__(
         self, 
-        params=None,
         model=None,
-        algorithm=None
+        algorithm=None,
+        fixed_x_execution_path: bool = False,
+        n_path: int = 1,
         # posterior_transform: Optional[PosteriorTransform] = None, TODO: Implement if needed 
-        # X_pending: Optional[Tensor] = None
     ) -> None: 
-        r"""Expected information gain (EIG) for algorithm output as acquisition function. 
+        r"""Expected information gain (EIG) for execution path. 
 
         Args:
             model: A fitted single-outcome model.
+            fixed_x_execution_path: True if the x-values of the execution path sequence is deterministic.
+
+            params: Parameters of the execution 
             Namespace with parameters for the AcqFunction
             posterior_transform: A PosteriorTransform. If using a multi-output model,
                 a PosteriorTransform that transforms the multi-output posterior into a
                 single-output posterior is required.
-            X_pending: A `m x d`-dim Tensor of `m` design points that have been
-                submitted for function evaluation but have not yet been evaluated.
         """
         super().__init__(model=model)
 
-        params = Namespace(**params)
         self.params = Namespace()
-        self.params.name = getattr(params, 'name', 'InfoBAXAcqFunction')
-        self.params.n_path = getattr(params, "n_path", 10)
-        self.params.exe_path_dependencies = getattr(params, "exe_path_dependencies", True)
+        self.params.fixed_x_execution_path = fixed_x_execution_path
+        self.model = copy.deepcopy(model)
+        self.algorithm = copy.deepcopy(algorithm)
 
-        # self.set_model(model)
-        self.set_algorithm(algorithm)
+        if fixed_x_execution_path and n_path > 1: 
+            warnings.warn('n_path is always 1 if fixed_x_execution_path is True to enhance computational efficiency. ', UserWarning)
+            self.params.n_path = 1
+        else:
+            self.params.n_path = n_path
 
-        print('Sampling of execution paths')
+        logging.info('Sampling of execution paths started ...')
 
         tstart = time.time()
 
-        if self.params.exe_path_dependencies:
-            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
+        if self.params.fixed_x_execution_path:
+            exe_path_list, output_list, full_list = self.get_exe_path_fixed_x()
         else: 
-            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples_independent()
+            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
 
-        message = 'Elapsed: %.2f seconds' % (time.time() - tstart)
+        logging.info('Execution path sampling complete. Time elapsed: %.2f seconds' % (time.time() - tstart))
         
-        print(message)
-
-        # Set self.output_list
         self.output_list = output_list
         self.exe_path_full_list = full_list 
-        self.exe_path_list = full_list
+        self.exe_path_list = exe_path_list
 
-    def set_model(self, model):
-        """Set self.model, the model underlying the acquisition function."""
-        if not model:
-            raise ValueError("The model input parameter cannot be None.")
-        else:
-            self.model = copy.deepcopy(model)
+    def get_exe_path_fixed_x(self):
 
-    def set_algorithm(self, algorithm):
-        """Set self.algorithm for this acquisition function."""
-        if not algorithm:
-            raise ValueError("The algorithm input parameter cannot be None.")
-        else:
-            self.algorithm = algorithm.get_copy()
+        x_path = self.algorithm.params.x_path.float()
+        x_path_l = list(x_path.unbind(dim=0))
+        # posterior = self.model.posterior(x_path)
 
+        # sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
+        # post_samples = sampler(posterior).unbind(dim=0)        
+
+        # Create n_f copies 
+        algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
+
+        # Initialize each algo in list
+        for algo in algo_list: # for algo, post in zip(algo_list, post_samples):
+            algo.exe_path.x = x_path_l
+            algo.exe_path.y = None # post.unbind(dim=0)
+
+        exe_path_full_list = None # [algo.exe_path for algo in algo_list]
+        output_list = None # [algo.get_output() for algo in algo_list]
+        exe_path_list = [algo.exe_path for algo in algo_list]
+
+        return exe_path_list, output_list, exe_path_full_list
 
     def get_exe_path_and_output_samples(self):
         exe_path_list = []
@@ -133,29 +130,6 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
 
         # Get crop of each exe_path in exe_path_list
         exe_path_list = algoset.get_exe_path_list_crop()
-
-        return exe_path_list, output_list, exe_path_full_list
-
-    def get_exe_path_and_output_samples_independent(self):
-
-        x_path = self.algorithm.params.x_path.float()
-        x_path_l = list(x_path.unbind(dim=0))
-        posterior = self.model.posterior(x_path)
-
-        sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
-        post_samples = sampler(posterior).unbind(dim=0)        
-
-        # Create n_f copies 
-        algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
-
-        # Initialize each algo in list
-        for algo, post in zip(algo_list, post_samples):
-            algo.exe_path.x = x_path_l
-            algo.exe_path.y = post.unbind(dim=0)
-
-        exe_path_full_list = [algo.exe_path for algo in algo_list]
-        output_list = [algo.get_output() for algo in algo_list]
-        exe_path_list = exe_path_full_list
 
         return exe_path_list, output_list, exe_path_full_list
 
@@ -212,69 +186,67 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
         Returns:
             A `batch_shape`-dim Tensor of EIG values at the given design points `X`.
         """
-        # Part 1: H(fx | AT)
 
-        mu, sigma = self._mean_and_sigma(X)
+        # Part 1: H(y_x | A_T) for different values x
 
-        # # 1. Posterior y_x | D for different x 
-        # posterior = self.model.posterior(
-        #     X.unsqueeze(-3),
-        #     observation_noise=False,
-        #     posterior_transform=None
-        # )
-        # mu = posterior.mean
-        # postvar = posterior.variance.detach().numpy().flatten()
-        # # TODO: Probably take the root
+        # 1. Compute posterior mean and sd 
+        _, sigma = self._mean_and_sigma(X) # Note that this returns sd not var 
 
         # 2. Formula for entropy (standard normal)
-        h_post = 0.5 * torch.log(2 * torch.pi * sigma) + 0.5
+        #    H(y_x | A_T)   = 0.5 * log(2 * pi * sigma^2) + 0.5 = 
+        #                   = 0.5 * log(2 * pi) + log(sigma) + 0.5
+        h_post = torch.log(sigma) + 0.5 * log(2 * pi) +  0.5
 
-        # Part 2: E[H(y_x | (D, eA))] given our different execution path samples eA
-
-        # Dt 
-
-        data = Namespace(x=self.model.train_inputs[0], y=self.model.train_targets)
-        dim = data.x.shape[1]
+        # Part 2: E[H(y_x | (A_T, e_A))] given our different execution path samples e_A
 
         h_samp_list = []
 
         tstart = time.time()
 
-        print('Computing of posterior')
+        logging.info('Computation of posterior given archive and execution path ...')
 
         for exe_path in self.exe_path_list:
 
-            exe_path_new = Namespace()
+            # 1. y | (A_t, x, e_A): Condition the posterior process y_x | (A_t, x) additionally on e_A
 
-            # 1. Merge (D, eA)
-            exe_path_new.x = torch.stack(exe_path.x)
-            exe_path_new.y = torch.stack(exe_path.y).flatten().detach()
+            # The data we need to condition on 
+            X_new = torch.stack(exe_path.x).to(dtype=torch.float64)
+            # Note: The computation of the entropy does not depend on the y values of the execution path
+            #       This is because the entropy only depends on the posterior variance, which only depends on X and not on Y for a GP
+            #       Note that the mean does, however the entropy does not need the mean. 
+            #       Therefore, we only fantasize some deterministic values. 
+            #       See the sample below for some evidence 
 
-            model_cond = copy.deepcopy(self.model)
-            post = model_cond.posterior(X)
-            X_new = exe_path_new.x.to(dtype=torch.float64)
-            Y_new = exe_path_new.y.view(-1, 1).to(dtype=torch.float64)
-            model_cond = model_cond.condition_on_observations(X=X_new, Y=Y_new)
-        
-            posterior_samp = model_cond.posterior(X)     
-            mean = posterior_samp.mean.squeeze(-2).squeeze(-1)
+            model_fantasized = copy.deepcopy(self.model)
+            sampler_det = DeterministicSampler(sample_shape=torch.Size([]))
+            model_fantasized = model_fantasized.fantasize(X_new, sampler_det)
 
-            # # 2. Computer posterior y_x | (D, eA)
-            postvar_samp = posterior_samp.variance.clamp_min(min_var).sqrt().view(mean.shape)
+            # y | (A_t, x, e_A)
+            posterior_fantasized = model_fantasized.posterior(X)     
+            # mean = posterior_fantasized.mean.squeeze(-2).squeeze(-1) # TODO: Do we need this one?
+            var_fantasized = posterior_fantasized.variance.squeeze()
+            sigma_fantasized = var_fantasized.clamp_min(min_var).sqrt()
 
-            # 3. Formula for entropy 
-            h_samp = 0.5 * np.log(2 * np.pi * postvar_samp) + 0.5
+            # The below holds: 
+            # sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
+            # model_fantasized2 = copy.deepcopy(self.model)
+            # model_fantasized2 = model_fantasized2.fantasize(X_new, sampler)
+            # posterior_fantasized2 = model_fantasized2.posterior(X)     
+            # var_fantasized2 = posterior_fantasized2.variance
+            # torch.equal(var_fantasized, var_fantasized2)
+
+            # 2. Formula for entropy 
+            h_samp= torch.log(sigma_fantasized) + 0.5 * log(2 * pi) +  0.5
             h_samp_list.append(h_samp)
 
         message = 'Elapsed: %.2f seconds' % (time.time() - tstart)
-        
-        print(message)
+        logging.info(message)
 
         # 4. Compute mean E[(...)]
-        avg_h_samp = np.mean(h_samp_list, 0)
+        avg_h_samp = torch.mean(torch.stack(h_samp_list), dim=0)
 
         # Part 3: Combine the part 1 and part 2
-        acq_exe = torch.from_numpy(h_post - avg_h_samp)
+        acq_exe = h_post - avg_h_samp
 
         return(acq_exe)
 

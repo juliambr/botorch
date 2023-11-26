@@ -824,6 +824,54 @@ class PosteriorMean(AnalyticAcquisitionFunction):
         mean, _ = self._mean_and_sigma(X, compute_sigma=False)
         return mean if self.maximize else -mean
 
+class PosteriorVariance(AnalyticAcquisitionFunction):
+    r"""Single-outcome Posterior Variance.
+
+    Only supports the case of q=1. Requires the model's posterior to have a
+    `mean` property. The model must be single-outcome.
+
+    Example:
+        >>> model = SingleTaskGP(train_X, train_Y)
+        >>> PV = PosteriorVariance(model)
+        >>> pv = PV(test_X)
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        posterior_transform: Optional[PosteriorTransform] = None,
+        maximize: bool = True,
+    ) -> None:
+        r"""Single-outcome Posterior Mean.
+
+        Args:
+            model: A fitted single-outcome GP model (must be in batch mode if
+                candidate sets X will be)
+            posterior_transform: A PosteriorTransform. If using a multi-output model,
+                a PosteriorTransform that transforms the multi-output posterior into a
+                single-output posterior is required.
+            maximize: If True, consider the problem a maximization problem. Note
+                that if `maximize=False`, the posterior mean is negated. As a
+                consequence `optimize_acqf(PosteriorVariance(gp, maximize=False))`
+                actually returns -1 * minimum of the posterior mean.
+        """
+        super().__init__(model=model, posterior_transform=posterior_transform)
+        self.maximize = maximize
+
+    @t_batch_mode_transform(expected_q=1)
+    def forward(self, X: Tensor) -> Tensor:
+        r"""Evaluate the posterior mean on the candidate set X.
+
+        Args:
+            X: A `(b1 x ... bk) x 1 x d`-dim batched tensor of `d`-dim design points.
+
+        Returns:
+            A `(b1 x ... bk)`-dim tensor of Posterior Mean values at the
+            given design points `X`.
+        """
+        mean, sd = self._mean_and_sigma(X)
+        return sd
+
 
 class ScalarizedPosteriorMean(AnalyticAcquisitionFunction):
     r"""Scalarized Posterior Mean.

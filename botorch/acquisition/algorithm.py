@@ -152,6 +152,26 @@ class PDPAlgorithm(FixedPathAlgorithm):
         next_x = x_path[len_path] if len_path < len(x_path) else None
         return next_x
 
+    def run_algorithm_on_f(self, f):
+        """
+        Run the algorithm by sequentially querying function f. Return the execution path
+        and output.
+        """
+        self.initialize()
+
+        exe_path = Namespace()
+
+        x_path = self.params.x_path
+        x_path_f = f(x_path)
+        x_path_len = x_path.size(0)
+        exe_path.x = [x_path[i] for i in range(x_path_len)]
+        exe_path.y = [x_path_f[i] for i in range(x_path_len)]
+
+        self.exe_path = exe_path
+
+        # Return execution path and output
+        return self.exe_path, self.get_output()
+
     def get_output(self):
         """Return output based on self.exe_path."""
         # Evaluated values at the grid 
