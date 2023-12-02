@@ -18,63 +18,64 @@ from botorch.models.gp_regression import SingleTaskGP
 from botorch.models.transforms.input import Normalize
 from botorch.models.transforms.outcome import Standardize
 from botorch.optim.optimize import optimize_acqf
-from botorch.test_functions.synthetic import StyblinskiTang
+from botorch.test_functions.synthetic import ApproximateObjective, StyblinskiTang
 from torch.quasirandom import SobolEngine
 
-from botorch.utils.testing import BotorchTestCase
+from botorch.utils.testing import BotorchTestCase, MockModel, MockPosterior
 
-class TestBAX(BotorchTestCase):
-    def setUp(self):
-        super().setUp()
-        dims = 3
+# def compute_approximated_PD(dim, bounds, approx_model, alg):
+#     f_approx = ApproximateObjective(dim=dim, bounds=bounds, model=approx_model)
 
-        self.dtype = torch.float64
-        self.bounds = torch.tensor([[-5, 5]] * dims, dtype=self.dtype).T
-        self.dims = dims
-        self.n_samples = 40
-        self.sobol = SobolEngine(dimension=self.dims, scramble=True, seed=None)
+#     alg.initialize()
 
-        self.f = StyblinskiTang(dim=self.dims)
-        self.data = Namespace()
-        X = self.sobol.draw(n=self.n_samples).to(dtype=self.dtype, device="cpu")
-        self.data.x = self.bounds[0,:] + (self.bounds[1,:] - self.bounds[0,:]) * X 
-        self.data.y = self.f(self.data.x).unsqueeze(0).T
+#     out_approx = alg.run_algorithm_on_f(f_approx)
 
-        self.model = SingleTaskGP(train_X=self.data.x, train_Y=self.data.y, input_transform=Normalize(d=self.dims), outcome_transform=Standardize(m=1))
+#     return(out_approx)
 
-        mll = ExactMarginalLogLikelihood(self.model.likelihood, self.model)
-        fit_gpytorch_mll(mll);
+class TestBAXPDP(BotorchTestCase):
 
-        # print("Lengthscale:", self.model.covar_module.base_kernel.lengthscale)
-        # print("Outputscale:", self.model.covar_module.outputscale)
-        # print("Noise:", self.model.likelihood.noise)
+    def test_bax_pdp(self): 
+        for dtype in (torch.float, torch.double): 
 
-        candidate_set = torch.rand(20, self.dims, device="cpu", dtype=self.dtype)
-        self.candidate_set = self.bounds[0,:] + (self.bounds[1,:] - self.bounds[0,:]) * candidate_set
-        self.candidate_set = self.candidate_set.unsqueeze(1)  
+            dim = 3
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-        n_points = 10
-        bounds = torch.tensor([[-5, 5]] * dims, dtype=self.dtype).T
-        grid_size = 3
-        xs=1
-        self.params = {"name": "MyPDP", "xs": xs, "n_points": n_points, "bounds": bounds, "grid_size": grid_size}
-        alg = PDPAlgorithm(self.params)
-        alg.initialize()
-        self.algorithm = alg
+            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
 
+            # test deterministic case 
+            module = InfoBAX(model=mm, algorithm=alg, exe_path_deterministic_x=True)
+            X = torch.zeros(1, dim, device=self.device, dtype=dtype)
 
-    def test_info_bax(self):
-        PV = PosteriorVariance(model=self.model, maximize=False)
-        PV.forward(self.candidate_set)
+            bax = module(X)            
 
-        EIG = InfoBAX(model=self.model, algorithm=self.algorithm, fixed_x_execution_path=True, n_path=2)
-        EIG.forward(self.candidate_set)
+    def test_bax_pdp_batch(self):
+        for dtype in (torch.float, torch.double):
+            dim = 2
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-    def test_info_bax_alternative(self):
-        params = {"name": "BAX", "n_path": 2, "exe_path_dependencies": False}
-        
+            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
+
+            # test deterministic case 
+            module = InfoBAX(model=mm, algorithm=alg, exe_path_deterministic_x=True)
+            X = torch.rand(3, 1, dim, device=self.device, dtype=dtype)
+
+            bax = module(X)            
+            
+            self.assertEqual(bax.shape, torch.Size([3]))
+
+    def test_info_bax_alternative(self):        
         # Paretoset
-        EIG = InfoBAX(params=params, model=self.model, algorithm=self.algorithm)
+        EIG = InfoBAX(model=self.model, algorithm=self.algorithm, fixed_x_execution_path=True, n_path=1)
         # Tensor of shape (n_path, len_exe_path, d)
         # Corresponding to (n_batch, P, d)
         pareto_sets = torch.stack([torch.stack(el.x) for el in EIG.exe_path_list], dim=0)

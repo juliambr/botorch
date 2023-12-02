@@ -433,7 +433,7 @@ def compute_data_grid(xs, bounds, n_points, grid_size):
         A `grid_size x n_points x d` Tensor 
     """
     d = bounds.shape[1]
-    grid_tensor = torch.zeros((grid_size, n_points, d), dtype=torch.float64)
+    grid_tensor = torch.zeros((grid_size, n_points, d), dtype=bounds.dtype)
 
     sobol = torch.quasirandom.SobolEngine(dimension=d-1, scramble=True, seed=None)
     sobol_sample = sobol.draw(n_points)
@@ -446,7 +446,7 @@ def compute_data_grid(xs, bounds, n_points, grid_size):
 
     sample_x = bounds[0] + (bounds[1] - bounds[0]) * sobol_sample
     grid_variable = torch.linspace(bounds[0,xs], bounds[1, xs], grid_size)
-    grid_tensor = torch.zeros((grid_size, n_points, d), dtype=torch.float64)
+    grid_tensor = torch.zeros((grid_size, n_points, d), dtype=bounds.dtype)
 
     i = 0
     for g in grid_variable:

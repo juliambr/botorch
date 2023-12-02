@@ -179,8 +179,8 @@ class PDPAlgorithm(FixedPathAlgorithm):
         # Group along grid points 
         keys, indices = torch.unique(self.params.x_path[:,self.params.xs], return_inverse=True)
         # Compute mean as main output and variance in case we want to display uncertainty bands 
-        means = torch.zeros_like(keys, dtype=torch.float32)
-        var = torch.zeros_like(keys, dtype=torch.float32)
+        means = torch.zeros_like(keys, dtype=self.params.x_path.dtype)
+        var = torch.zeros_like(keys, dtype=self.params.x_path.dtype)
         for i, key in enumerate(keys):
             means[i] = y[indices == i].mean()
             var[i] = y[indices == i].var()

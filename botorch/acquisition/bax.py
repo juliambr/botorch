@@ -28,10 +28,9 @@ import warnings
 import logging
 from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 
-import numpy as np
 import torch
 from botorch.acquisition.algorithm import AlgorithmSet
-from botorch.sampling import SobolQMCNormalSampler, DeterministicSampler
+from botorch.sampling import DeterministicSampler
 import time 
 
 CLAMP_LB = 1.0e-8
@@ -42,37 +41,38 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
     This class provides an implementation of infill-criterion introduced in [Neiswanger2021Bax]_.
     Note that this is an implementation of 3.1 (EIG for Execution Path) in [Neiswanger2021Bax]_ only. 
     Please verify the assumptions of whether this is suitable depending on the algorithm chosen. 
+    
+    Example:
+    >>> alg = PDPAlgorithm({"name": "PDP", "xs": 0, "n_points": 20, "bounds": f.bounds, "grid_size": 20})
+    >>> alg.initialize()
+    >>> model = SingleTaskGP(train_X, train_Y)
+    >>> EIG = InfoBAX(model=model, algorithm=alg)
+    >>> acq_values = EIG.forward(test_X)
     """
 
     def __init__(
         self, 
         model=None,
         algorithm=None,
-        fixed_x_execution_path: bool = False,
+        exe_path_deterministic_x: bool = False,
         n_path: int = 1,
-        # posterior_transform: Optional[PosteriorTransform] = None, TODO: Implement if needed 
     ) -> None: 
         r"""Expected information gain (EIG) for execution path. 
 
         Args:
             model: A fitted single-outcome model.
             fixed_x_execution_path: True if the x-values of the execution path sequence is deterministic.
-
-            params: Parameters of the execution 
-            Namespace with parameters for the AcqFunction
-            posterior_transform: A PosteriorTransform. If using a multi-output model,
-                a PosteriorTransform that transforms the multi-output posterior into a
-                single-output posterior is required.
+            n_path: Number of execution path samples; 1 if fixed_x_execution path is True.
         """
         super().__init__(model=model)
 
         self.params = Namespace()
-        self.params.fixed_x_execution_path = fixed_x_execution_path
+        self.params.exe_path_deterministic_x = exe_path_deterministic_x
         self.model = copy.deepcopy(model)
         self.algorithm = copy.deepcopy(algorithm)
 
-        if fixed_x_execution_path and n_path > 1: 
-            warnings.warn('n_path is always 1 if fixed_x_execution_path is True to enhance computational efficiency. ', UserWarning)
+        if exe_path_deterministic_x and n_path > 1: 
+            warnings.warn('n_path is always 1 if exe_path_deterministic_x is True to optimize computational efficiency. ', UserWarning)
             self.params.n_path = 1
         else:
             self.params.n_path = n_path
@@ -81,10 +81,7 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
 
         tstart = time.time()
 
-        if self.params.fixed_x_execution_path:
-            exe_path_list, output_list, full_list = self.get_exe_path_fixed_x()
-        else: 
-            exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
+        exe_path_list, output_list, full_list = self.get_exe_path_and_output_samples()
 
         logging.info('Execution path sampling complete. Time elapsed: %.2f seconds' % (time.time() - tstart))
         
@@ -92,47 +89,42 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
         self.exe_path_full_list = full_list 
         self.exe_path_list = exe_path_list
 
-    def get_exe_path_fixed_x(self):
-
-        x_path = self.algorithm.params.x_path.float()
-        x_path_l = list(x_path.unbind(dim=0))
-        # posterior = self.model.posterior(x_path)
-
-        # sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
-        # post_samples = sampler(posterior).unbind(dim=0)        
-
-        # Create n_f copies 
-        algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
-
-        # Initialize each algo in list
-        for algo in algo_list: # for algo, post in zip(algo_list, post_samples):
-            algo.exe_path.x = x_path_l
-            algo.exe_path.y = None # post.unbind(dim=0)
-
-        exe_path_full_list = None # [algo.exe_path for algo in algo_list]
-        output_list = None # [algo.get_output() for algo in algo_list]
-        exe_path_list = [algo.exe_path for algo in algo_list]
-
-        return exe_path_list, output_list, exe_path_full_list
-
     def get_exe_path_and_output_samples(self):
+        """Samples a list of n_path execution path samples and respective outputs.
+        If the execution path is deterministic, it just returns the x_path; respective y-values are not needed.
+        """
         exe_path_list = []
+        exe_path_full_list = []
         output_list = []
-        # Initialize model fsl
-        self.fsl_queries = [Namespace(x=None, y=None) for _ in range(self.params.n_path)]
 
-        # Run algorithm on function sample list
-        f_list = self.call_function_sample_list
-        algoset = AlgorithmSet(self.algorithm)
-        exe_path_full_list, output_list = algoset.run_algorithm_on_f_list(
-            f_list, self.params.n_path
-        )
+        if self.params.exe_path_deterministic_x: 
 
-        # Get crop of each exe_path in exe_path_list
-        exe_path_list = algoset.get_exe_path_list_crop()
+            x_path = self.algorithm.params.x_path
+            x_path_l = list(x_path.unbind(dim=0))
+            # Create n_f copies to have outputs in same format is for the non-deterministic case
+            algo_list = [self.algorithm.get_copy() for _ in range(self.params.n_path)]
+
+            for algo in algo_list: 
+                algo.exe_path.x = x_path_l
+                algo.exe_path.y = None 
+
+            exe_path_list = [algo.exe_path for algo in algo_list]  
+
+        else: 
+            # Initialize model fsl
+            self.fsl_queries = [Namespace(x=None, y=None) for _ in range(self.params.n_path)]
+
+            # Run algorithm on function sample list
+            f_list = self.call_function_sample_list
+            algoset = AlgorithmSet(self.algorithm)
+            exe_path_full_list, output_list = algoset.run_algorithm_on_f_list(
+                f_list, self.params.n_path
+            )
+
+            # Get crop of each exe_path in exe_path_list
+            exe_path_list = algoset.get_exe_path_list_crop()
 
         return exe_path_list, output_list, exe_path_full_list
-
 
     def call_function_sample_list(self, x_list):
         y_list = None
@@ -210,7 +202,7 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
             # 1. y | (A_t, x, e_A): Condition the posterior process y_x | (A_t, x) additionally on e_A
 
             # The data we need to condition on 
-            X_new = torch.stack(exe_path.x).to(dtype=torch.float64)
+            X_new = torch.stack(exe_path.x).to(dtype=X.dtype)
             # Note: The computation of the entropy does not depend on the y values of the execution path
             #       This is because the entropy only depends on the posterior variance, which only depends on X and not on Y for a GP
             #       Note that the mean does, however the entropy does not need the mean. 
@@ -226,14 +218,6 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
             # mean = posterior_fantasized.mean.squeeze(-2).squeeze(-1) # TODO: Do we need this one?
             var_fantasized = posterior_fantasized.variance.squeeze()
             sigma_fantasized = var_fantasized.clamp_min(min_var).sqrt()
-
-            # The below holds: 
-            # sampler = SobolQMCNormalSampler(sample_shape=torch.Size([self.params.n_path]))
-            # model_fantasized2 = copy.deepcopy(self.model)
-            # model_fantasized2 = model_fantasized2.fantasize(X_new, sampler)
-            # posterior_fantasized2 = model_fantasized2.posterior(X)     
-            # var_fantasized2 = posterior_fantasized2.variance
-            # torch.equal(var_fantasized, var_fantasized2)
 
             # 2. Formula for entropy 
             h_samp= torch.log(sigma_fantasized) + 0.5 * log(2 * pi) +  0.5
