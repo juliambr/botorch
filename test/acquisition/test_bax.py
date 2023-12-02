@@ -11,8 +11,9 @@ from gpytorch import ExactMarginalLogLikelihood
 import torch
 from botorch.acquisition.algorithm import PDPAlgorithm
 from botorch.acquisition.analytic import ExpectedImprovement, PosteriorVariance
-from botorch.acquisition.bax import InfoBAX
+from botorch.acquisition.bax import BOBAX, InfoBAX
 from botorch.acquisition.multi_objective.predictive_entropy_search import qMultiObjectivePredictiveEntropySearch
+from botorch.acquisition.utils import get_optimal_samples
 
 from botorch.models.gp_regression import SingleTaskGP
 from botorch.models.transforms.input import Normalize
@@ -73,27 +74,30 @@ class TestBAXPDP(BotorchTestCase):
             
             self.assertEqual(bax.shape, torch.Size([3]))
 
-    def test_info_bax_alternative(self):        
-        # Paretoset
-        EIG = InfoBAX(model=self.model, algorithm=self.algorithm, fixed_x_execution_path=True, n_path=1)
-        # Tensor of shape (n_path, len_exe_path, d)
-        # Corresponding to (n_batch, P, d)
-        pareto_sets = torch.stack([torch.stack(el.x) for el in EIG.exe_path_list], dim=0)
+    def test_bobax(self):      
+        for dtype in (torch.float, torch.double): 
 
-        acq = qMultiObjectivePredictiveEntropySearch(
-                    model=self.model,
-                    pareto_sets=pareto_sets,
-                    maximize=True
-                )
+            dim = 3
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-        acq(self.candidate_set.unsqueeze(1))        
+            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
 
-        candidate, acq_value = optimize_acqf(
-            acq_function=acq,
-            bounds=self.bounds,
-            q=1,  # Number of candidates to return
-            num_restarts=1,  # Optimization restarts
-            raw_samples=20,  # Samples for initialization heuristic
-        )        
+            num_samples = 8
 
-        print("bla")
+            optimal_inputs, optimal_outputs = get_optimal_samples(
+                mm,
+                bounds=bounds.T,
+                num_optima=num_samples
+            )
+
+            # test deterministic case 
+            module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False)
+            X = torch.zeros(1, dim, device=self.device, dtype=dtype)
+
+            bax = module(X)           
+

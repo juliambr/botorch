@@ -23,14 +23,16 @@ from argparse import Namespace
 from copy import deepcopy
 import copy
 from math import log, pi
-from typing import Any
+from typing import Any, Optional
 import warnings
 import logging
-from botorch.acquisition.analytic import AnalyticAcquisitionFunction
 
 import torch
-from botorch.acquisition.algorithm import AlgorithmSet
+from botorch.acquisition.analytic import AnalyticAcquisitionFunction
+from botorch.acquisition.algorithm import Algorithm, AlgorithmSet
+from botorch.acquisition.predictive_entropy_search import qPredictiveEntropySearch
 from botorch.sampling import DeterministicSampler
+from botorch.models.model import Model 
 import time 
 
 CLAMP_LB = 1.0e-8
@@ -54,7 +56,8 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
         self, 
         model=None,
         algorithm=None,
-        exe_path_deterministic_x: bool = False,
+        exe_path_deterministic_x: bool = True,
+        optimal_inputs=None, 
         n_path: int = 1,
     ) -> None: 
         r"""Expected information gain (EIG) for execution path. 
@@ -64,7 +67,7 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
             fixed_x_execution_path: True if the x-values of the execution path sequence is deterministic.
             n_path: Number of execution path samples; 1 if fixed_x_execution path is True.
         """
-        super().__init__(model=model)
+        super().__init__(model=model, optimal_inputs=optimal_inputs)
 
         self.params = Namespace()
         self.params.exe_path_deterministic_x = exe_path_deterministic_x
@@ -234,3 +237,91 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
 
         return(acq_exe)
 
+
+class BOBAX(InfoBAX, qPredictiveEntropySearch): 
+    r"""The acquisition function for Predictive Entropy Search.
+
+    This acquisition function approximates the mutual information between the
+    observation at a candidate point `X` and the optimal set of inputs using
+    expectation propagation (EP).
+
+    NOTES:
+    (i) The expectation propagation procedure can potentially fail due to the unstable
+    EP updates. This is however unlikely to happen in the single-objective setting
+    because we have much fewer EP factors. The jitter added in the training phase
+    (`ep_jitter`) and testing phase (`test_jitter`) can be increased to prevent
+    these failures from happening. More details in the description of
+    `qMultiObjectivePredictiveEntropySearch`.
+
+    (ii) The estimated acquisition value could be negative.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        algorithm: Algorithm,
+        optimal_inputs: torch.Tensor,
+        exe_path_deterministic_x = True,
+        maximize: bool = True,
+        X_pending: Optional[torch.Tensor] = None,
+        max_ep_iterations: int = 250,
+        ep_jitter: float = 1e-4,
+        test_jitter: float = 1e-4,
+        threshold: float = 1e-2,
+        **kwargs: Any,
+    ) -> None:
+        r"""Predictive entropy search acquisition function.
+
+        Args:
+            model: A fitted single-outcome model.
+            optimal_inputs: A `num_samples x d`-dim tensor containing the sampled
+                optimal inputs of dimension `d`. We assume for simplicity that each
+                sample only contains one optimal set of inputs.
+            maximize: If true, we consider a maximization problem.
+            X_pending: A `m x d`-dim Tensor of `m` design points that have been
+                submitted for function evaluation, but have not yet been evaluated.
+            max_ep_iterations: The maximum number of expectation propagation
+                iterations. (The minimum number of iterations is set at 3.)
+            ep_jitter: The amount of jitter added for the matrix inversion that
+                occurs during the expectation propagation update during the training
+                phase.
+            test_jitter: The amount of jitter added for the matrix inversion that
+                occurs during the expectation propagation update in the testing
+                phase.
+            threshold: The convergence threshold for expectation propagation. This
+                assesses the relative change in the mean and covariance. We default
+                to one percent change i.e. `threshold = 1e-2`.
+        """
+        # InfoBAX.__init__(self, model=model, algorithm=algorithm, optimal_inputs=optimal_inputs)
+
+
+
+        # super(BOBAX, self).__init__(
+        #     model=model, 
+        #     algorithm=algorithm, 
+        #     # optimal_inputs=optimal_inputs,
+        #     # maximize=maximize,
+        #     # X_pending=X_pending,
+        #     # max_ep_iterations=max_ep_iterations,
+        #     # ep_jitter=ep_jitter,
+        #     # test_jitter=test_jitter,
+        #     # threshold=threshold,
+        # )
+
+
+        # X_new = torch.stack(self.exe_path_list[0].x).to(dtype=optimal_inputs.dtype)
+
+        # model_fantasized = copy.deepcopy(model)
+        # sampler_det = DeterministicSampler(sample_shape=torch.Size([]))
+        # model_fantasized = model_fantasized.fantasize(X_new, sampler_det)
+
+        # super().__init__(
+        #     model=model_fantasized,
+        #     pareto_sets=optimal_inputs.unsqueeze(-2),
+        #     maximize=maximize,
+        #     X_pending=X_pending,
+        #     max_ep_iterations=max_ep_iterations,
+        #     ep_jitter=ep_jitter,
+        #     test_jitter=test_jitter,
+        #     threshold=threshold,
+        # )
