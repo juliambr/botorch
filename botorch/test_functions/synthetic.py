@@ -54,6 +54,8 @@ from botorch.test_functions.base import BaseTestProblem, ConstrainedBaseTestProb
 from botorch.test_functions.utils import round_nearest
 from torch import Tensor
 
+import copy
+
 
 class SyntheticTestFunction(BaseTestProblem):
     r"""Base class for synthetic test functions."""
@@ -1035,7 +1037,7 @@ class SpeedReducer(SyntheticTestFunction, ConstrainedBaseTestProblem):
         )
 
 
-class ApproxmiateObjective(SyntheticTestFunction):
+class ApproximateObjective(SyntheticTestFunction):
     r"""Test function using the model posterior as an approximation of a true function.
     """
 
@@ -1047,9 +1049,10 @@ class ApproxmiateObjective(SyntheticTestFunction):
         bounds: List[Tuple[float, float]] = None, 
         model = None
     ) -> None: 
-        self._bounds = bounds
+        self._optimizers = None
+        self._bounds = [tuple(row) for row in bounds.tolist()]
         self.dim = dim
-        super().__init__(noise_std=noise_std, negate=negate, bounds=bounds) 
+        super().__init__(noise_std=noise_std, negate=negate, bounds=self._bounds) 
         self.model = model
     
     def evaluate_true(self, X: Tensor) -> Tensor:
