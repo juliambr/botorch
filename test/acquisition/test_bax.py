@@ -74,7 +74,7 @@ class TestBAXPDP(BotorchTestCase):
             
             self.assertEqual(bax.shape, torch.Size([3]))
 
-    def test_bobax(self):      
+    def test_bobax_pdp(self):      
         for dtype in (torch.float, torch.double): 
 
             dim = 3
@@ -101,3 +101,31 @@ class TestBAXPDP(BotorchTestCase):
 
             bax = module(X)           
 
+    def test_bobax_pdp_batch(self):      
+        for dtype in (torch.float, torch.double): 
+
+            dim = 3
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
+
+            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
+
+            num_samples = 8
+
+            optimal_inputs, optimal_outputs = get_optimal_samples(
+                mm,
+                bounds=bounds.T,
+                num_optima=num_samples
+            )
+
+            # test deterministic case 
+            module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False)
+            X = torch.rand(3, 1, dim, device=self.device, dtype=dtype)
+
+            bobax = module(X)            
+            
+            self.assertEqual(bobax.shape, torch.Size([3]))
