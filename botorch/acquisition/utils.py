@@ -26,6 +26,7 @@ from botorch.exceptions.errors import DeprecationError, UnsupportedError
 from botorch.models.fully_bayesian import MCMC_DIM
 from botorch.models.model import Model
 from botorch.sampling.base import MCSampler
+from scipy.stats.qmc import LatinHypercube
 from botorch.sampling.get_sampler import get_sampler
 from botorch.sampling.pathwise import draw_matheron_paths
 from botorch.utils.objective import compute_feasibility_indicator
@@ -435,16 +436,19 @@ def compute_data_grid(xs, bounds, n_points, grid_size):
     d = bounds.shape[1]
     grid_tensor = torch.zeros((grid_size, n_points, d), dtype=bounds.dtype)
 
-    sobol = torch.quasirandom.SobolEngine(dimension=d-1, scramble=True, seed=None)
-    sobol_sample = sobol.draw(n_points)
+    lhs = LatinHypercube(d=d-1)
+    sample = torch.Tensor(lhs.random(n=n_points))
+
+    # sobol = torch.quasirandom.SobolEngine(dimension=d-1, scramble=True, seed=None)
+    # sample = sobol.draw(n_points)
 
     zeros = torch.zeros(n_points, 1)
-    left = sobol_sample[:, :xs]
-    right = sobol_sample[:, xs:]
+    left = sample[:, :xs]
+    right = sample[:, xs:]
 
-    sobol_sample = torch.cat((left, zeros, right), dim=1)
+    sample = torch.cat((left, zeros, right), dim=1)
 
-    sample_x = bounds[0] + (bounds[1] - bounds[0]) * sobol_sample
+    sample_x = bounds[0] + (bounds[1] - bounds[0]) * sample
     grid_variable = torch.linspace(bounds[0,xs], bounds[1, xs], grid_size)
     grid_tensor = torch.zeros((grid_size, n_points, d), dtype=bounds.dtype)
 

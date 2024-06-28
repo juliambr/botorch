@@ -34,6 +34,7 @@ from botorch.acquisition.predictive_entropy_search import qPredictiveEntropySear
 from botorch.sampling import DeterministicSampler
 from botorch.models.model import Model 
 import time 
+import random
 
 CLAMP_LB = 1.0e-8
 
@@ -58,6 +59,7 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
         algorithm=None,
         exe_path_deterministic_x: bool = True,
         n_path: int = 1,
+        subsample_size=None 
     ) -> None: 
         r"""Expected information gain (EIG) for execution path. 
 
@@ -72,6 +74,7 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
         self.params.exe_path_deterministic_x = exe_path_deterministic_x
         self.model = copy.deepcopy(model)
         self.algorithm = copy.deepcopy(algorithm)
+        self.subsample_size = subsample_size
 
         if exe_path_deterministic_x and n_path > 1: 
             warnings.warn('n_path is always 1 if exe_path_deterministic_x is True to optimize computational efficiency. ', UserWarning)
@@ -204,7 +207,12 @@ class InfoBAX(AnalyticAcquisitionFunction, ABC):
             # 1. y | (A_t, x, e_A): Condition the posterior process y_x | (A_t, x) additionally on e_A
 
             # The data we need to condition on 
-            X_new = torch.stack(exe_path.x).to(dtype=X.dtype)
+            if self.subsample_size is None or self.subsample_size >= len(exe_path.x):
+                exe_path_x = exe_path.x
+            else:
+                exe_path_x = random.sample(exe_path.x, self.subsample_size)
+
+            X_new = torch.stack(exe_path_x).to(dtype=X.dtype)
             # Note: The computation of the entropy does not depend on the y values of the execution path
             #       This is because the entropy only depends on the posterior variance, which only depends on X and not on Y for a GP
             #       Note that the mean does, however the entropy does not need the mean. 
@@ -267,6 +275,7 @@ class BOBAX(qPredictiveEntropySearch):
         ep_jitter: float = 1e-4,
         test_jitter: float = 1e-4,
         threshold: float = 1e-2,
+        subsample_size=None,
         **kwargs: Any,
     ) -> None:
         r"""Predictive entropy search acquisition function.
@@ -294,9 +303,17 @@ class BOBAX(qPredictiveEntropySearch):
 
         EIG = InfoBAX(model=model, algorithm=algorithm)
 
-        X_new = torch.stack(EIG.exe_path_list[0].x).to(dtype=optimal_inputs.dtype)
+        if subsample_size is None or subsample_size >= len(EIG.exe_path_list[0].x):
+            exe_path_x = EIG.exe_path_list[0].x
+        else:
+            exe_path_x = random.sample(EIG.exe_path_list[0].x, subsample_size)
+
+        X_new = torch.stack(exe_path_x).to(dtype=optimal_inputs.dtype)
+        Y_new = torch.rand(X_new.size()[0], 1)
 
         model_fantasized = copy.deepcopy(model)
+        model_fantasized = model_fantasized.condition_on_observations(X=X_new, Y=Y_new, )
+
         sampler_det = DeterministicSampler(sample_shape=torch.Size([]))
         model_fantasized = model_fantasized.fantasize(X_new, sampler_det)
 

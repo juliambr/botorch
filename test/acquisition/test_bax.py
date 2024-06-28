@@ -62,7 +62,7 @@ class TestBAXPDP(BotorchTestCase):
             train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
             mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            params = {"name": "MyPDP", "xs": 1, "n_points": 10, "bounds": bounds.T, "grid_size": 20}
             alg = PDPAlgorithm(params)
             alg.initialize()
 
@@ -74,6 +74,25 @@ class TestBAXPDP(BotorchTestCase):
             
             self.assertEqual(bax.shape, torch.Size([3]))
 
+    def test_bax_pdp_subsample(self):      
+        for dtype in (torch.float, torch.double): 
+
+            dim = 3
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
+
+            params = {"name": "MyPDP", "xs": 1, "n_points": 100, "bounds": bounds.T, "grid_size": 20}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
+
+            # test deterministic case 
+            module = InfoBAX(model=mm, algorithm=alg, exe_path_deterministic_x=True, subsample_size=5)
+            X = torch.zeros(1, dim, device=self.device, dtype=dtype)
+
+            bax = module(X)     
+
     def test_bobax_pdp(self):      
         for dtype in (torch.float, torch.double): 
 
@@ -83,7 +102,7 @@ class TestBAXPDP(BotorchTestCase):
             train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
             mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            params = {"name": "MyPDP", "xs": 1, "n_points": 20, "bounds": bounds.T, "grid_size": 10}
             alg = PDPAlgorithm(params)
             alg.initialize()
 
@@ -99,7 +118,36 @@ class TestBAXPDP(BotorchTestCase):
             module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False)
             X = torch.zeros(1, dim, device=self.device, dtype=dtype)
 
-            bax = module(X)           
+            bax = module(X)     
+
+    def test_bobax_pdp_subsample(self):      
+        for dtype in (torch.float, torch.double): 
+
+            dim = 3
+            bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+            train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+            train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+            mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
+
+            params = {"name": "MyPDP", "xs": 1, "n_points": 20, "bounds": bounds.T, "grid_size": 10}
+            alg = PDPAlgorithm(params)
+            alg.initialize()
+
+            num_samples = 8
+
+            optimal_inputs, optimal_outputs = get_optimal_samples(
+                mm,
+                bounds=bounds.T,
+                num_optima=num_samples
+            )
+
+            # test deterministic case 
+            module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False, subsample_size=3)
+            X = torch.zeros(1, dim, device=self.device, dtype=dtype)
+
+            bax = module(X)     
+      
+    
 
     def test_bobax_pdp_batch(self):      
         for dtype in (torch.float, torch.double): 
@@ -110,7 +158,7 @@ class TestBAXPDP(BotorchTestCase):
             train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
             mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
 
-            params = {"name": "MyPDP", "xs": 1, "n_points": 5, "bounds": bounds.T, "grid_size": 3}
+            params = {"name": "MyPDP", "xs": 1, "n_points": 10, "bounds": bounds.T, "grid_size": 20}
             alg = PDPAlgorithm(params)
             alg.initialize()
 
@@ -124,8 +172,46 @@ class TestBAXPDP(BotorchTestCase):
 
             # test deterministic case 
             module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False)
-            X = torch.rand(3, 1, dim, device=self.device, dtype=dtype)
 
-            bobax = module(X)            
+            candidate_set = torch.rand(50, dim, device="cpu")
+            candidate_set = bounds[:,0] + (bounds[:,1] - bounds[:,0]) * candidate_set
+            candidate_set = candidate_set.unsqueeze(1)
+
+            bobax = module(candidate_set)            
             
-            self.assertEqual(bobax.shape, torch.Size([3]))
+            self.assertEqual(bobax.shape, torch.Size([50]))
+
+    def test_bobax_pdp_acq_optim(self):    
+
+        for dim in [2, 3, 5, 8]:  
+            for dtype in (torch.float, torch.double): 
+
+                # dim = 5
+                bounds = torch.tensor([[-5, 5]] * dim, device=self.device, dtype=dtype)
+                train_X = torch.rand(8, dim, device=self.device, dtype=dtype)
+                train_Y = torch.rand(8, 1, device=self.device, dtype=dtype)
+                mm = SingleTaskGP(train_X=train_X, train_Y=train_Y, input_transform=Normalize(d=dim), outcome_transform=Standardize(m=1))
+
+                params = {"name": "MyPDP", "xs": 1, "n_points": 100, "bounds": bounds.T, "grid_size": 20}
+                alg = PDPAlgorithm(params)
+                alg.initialize()
+
+                num_samples = 8
+
+                optimal_inputs, optimal_outputs = get_optimal_samples(
+                    mm,
+                    bounds=bounds.T,
+                    num_optima=num_samples
+                )
+
+                # test deterministic case 
+                module = BOBAX(model=mm, algorithm=alg, optimal_inputs=optimal_inputs, maximize=False)
+
+                candidate, acq_value = optimize_acqf(
+                    acq_function=module,
+                    bounds=bounds.T,
+                    q=1,
+                    num_restarts=10,
+                    raw_samples=512,
+                    options={"with_grad": False},
+                )
